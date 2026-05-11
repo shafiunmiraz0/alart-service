@@ -1,5 +1,6 @@
 {
   "discord_webhook_url": "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN",
+  "discord_avatar_url": "",
   "check_interval": "30s",
   "alert_cooldown": "5m",
   "thresholds": {
@@ -16,6 +17,11 @@
     "recursive": true,
     "watch_paths": [],
     "ignore_patterns": ["*.swp", "*.tmp", "*~", ".pwd.lock"]
+  },
+  "k8s_cert_monitor": {
+    "check_interval": "6h",
+    "cert_paths": ["/etc/kubernetes/pki"],
+    "warning_days": [30, 14, 7, 1]
   },
   "log_file": "/var/log/alart-service.log",
   "log_level": "info"
