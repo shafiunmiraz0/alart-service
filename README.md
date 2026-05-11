@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🚨 alart-service
 
 A **lightweight, zero-dependency** Linux system monitoring service that sends threshold alerts to Discord via webhooks.
@@ -172,3 +173,6 @@ The service is designed to be extremely lightweight:
 ## License
 
 MIT
+=======
+# alart-service
+>>>>>>> 8dbcbb758cdd57ebba714bbc0c80759d2c78ac96
