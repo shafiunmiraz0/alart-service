@@ -141,20 +141,25 @@ func detectFileModifier(filePath string) string {
 // auid from the LAST SYSCALL record — that's the actual person who just did it.
 func getUserFromAuditLog(filePath string) string {
 	// Brief pause so auditd can flush the event to the log before we query.
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
-	// Compute a timestamp ~5 seconds ago for a tight search window.
-	ts := time.Now().Add(-5 * time.Second).Format("01/02/2006 15:04:05")
-
-	out, err := exec.Command("ausearch", "-f", filePath, "-i", "-ts", ts).Output()
-	if err != nil || len(out) == 0 {
+	// Use "-ts recent" (last 10 minutes) — simple and reliable.
+	// We take the LAST SYSCALL record below, so stale events are harmless.
+	out, err := exec.Command("ausearch", "-f", filePath, "-i", "-ts", "recent").CombinedOutput()
+	if len(out) == 0 {
+		if err != nil {
+			log.Printf("[etc-watcher] ausearch error: %v", err)
+		}
 		return ""
 	}
+
+	output := string(out)
+	log.Printf("[etc-watcher] ausearch returned %d bytes for %s", len(out), filePath)
 
 	// Parse output and find the LAST SYSCALL line — that's the most recent event.
 	// ausearch output is chronological, so the last matching record is the one
 	// that corresponds to the inotify event we just received.
-	lines := strings.Split(string(out), "\n")
+	lines := strings.Split(output, "\n")
 	lastAuid := ""
 	lastUid := ""
 
@@ -178,6 +183,16 @@ func getUserFromAuditLog(filePath string) string {
 	}
 	if lastUid != "" {
 		return lastUid
+	}
+
+	// If we got output but no SYSCALL lines, log it for debugging.
+	if lastAuid == "" && lastUid == "" && len(output) > 0 {
+		// Log first 300 chars to see what ausearch actually returned.
+		preview := output
+		if len(preview) > 300 {
+			preview = preview[:300]
+		}
+		log.Printf("[etc-watcher] ausearch output had no SYSCALL lines: %s", preview)
 	}
 
 	return ""
