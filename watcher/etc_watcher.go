@@ -85,8 +85,8 @@ func (w *EtcWatcher) notifyFileEvent(eventType, filePath string) {
 		sizeInfo = fmt.Sprintf("%d bytes", stat.Size())
 	}
 
-	// Try to determine who made the change using /proc.
-	user := detectUser()
+	// Try to determine who specifically made the change to this file.
+	user := detectFileModifier(filePath)
 
 	alert := notifier.Alert{
 		Title:       "🔐 /etc Monitor Alert",
@@ -107,68 +107,137 @@ func (w *EtcWatcher) notifyFileEvent(eventType, filePath string) {
 	}
 }
 
-// detectUser finds the real login user(s) who are currently logged into the system.
-// Since the service runs as root under systemd, we can't use $USER.
-// Instead, we use 'who' to find active login sessions — this shows the original
-// SSH user even after 'sudo su'.
-func detectUser() string {
-	// Method 1: Parse 'who' output for active login sessions.
-	// This is the most reliable way to find who SSH'd in.
-	if users := getActiveLoginUsers(); len(users) > 0 {
-		return strings.Join(users, ", ")
+// detectFileModifier identifies the specific user who modified a file.
+// Unlike the old approach that listed ALL logged-in users, this uses
+// targeted methods to find who actually touched the file:
+//  1. ausearch  – queries the Linux audit log for recent writes to the file
+//  2. lsof      – finds processes that currently have the file open
+//  3. /proc scan – checks /proc/*/fd for open file descriptors pointing to the file
+//  4. fallback  – returns "unknown" (no longer dumps all SSH users)
+func detectFileModifier(filePath string) string {
+	// Method 1: Use auditd's ausearch to find who wrote to this file.
+	// This is the most accurate — the audit subsystem records the real UID
+	// even through sudo/su. Requires auditd to be running with a watch on /etc.
+	if user := getUserFromAuditLog(filePath); user != "" {
+		return user
 	}
 
-	// Method 2: Scan /proc/*/loginuid for non-root login UIDs.
-	// The Linux kernel tracks the original login UID (audit UID) which
-	// persists through sudo/su.
-	if users := getLoginUIDs(); len(users) > 0 {
-		return strings.Join(users, ", ")
+	// Method 2: Use lsof to find who currently has the file open.
+	if user := getUserFromLsof(filePath); user != "" {
+		return user
+	}
+
+	// Method 3: Scan /proc/*/fd to find a process with this file open,
+	// then resolve the process owner via loginuid.
+	if user := getUserFromProcFd(filePath); user != "" {
+		return user
 	}
 
 	return "unknown"
 }
 
-// getActiveLoginUsers parses 'who' output to find logged-in users.
-// 'who' reads /var/run/utmp and shows the original login user, not the
-// effective user after sudo/su.
-// Example output: "shafiun  pts/0  2026-05-11 17:00 (192.168.1.5)"
-func getActiveLoginUsers() []string {
-	out, err := exec.Command("who").Output()
-	if err != nil {
-		return nil
+// getUserFromAuditLog queries ausearch for recent write events on the file.
+// Example: ausearch -f /etc/shadow -i --just-one -ts recent
+// Output contains lines like: "uid=shafiun" or "auid=shafiun".
+func getUserFromAuditLog(filePath string) string {
+	out, err := exec.Command("ausearch", "-f", filePath, "-i", "--just-one", "-ts", "recent").Output()
+	if err != nil || len(out) == 0 {
+		return ""
 	}
 
+	output := string(out)
+
+	// Look for auid= (audit/login UID — the original login user).
+	// This persists through sudo/su and is the real person.
+	for _, line := range strings.Split(output, "\n") {
+		if idx := strings.Index(line, "auid="); idx >= 0 {
+			val := extractAuditValue(line, "auid=")
+			if val != "" && val != "unset" && val != "root" {
+				return val
+			}
+		}
+	}
+
+	// Fallback: look for uid= (effective user who ran the command).
+	for _, line := range strings.Split(output, "\n") {
+		if idx := strings.Index(line, " uid="); idx >= 0 {
+			val := extractAuditValue(line, " uid=")
+			if val != "" && val != "unset" {
+				return val
+			}
+		}
+	}
+
+	return ""
+}
+
+// extractAuditValue extracts the value after a key like "auid=" from an audit line.
+func extractAuditValue(line, key string) string {
+	idx := strings.Index(line, key)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(key):]
+	// Value ends at space or end of line.
+	end := strings.IndexAny(rest, " \t\n")
+	if end < 0 {
+		return strings.TrimSpace(rest)
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
+// getUserFromLsof uses lsof to find which user has the file open.
+// Example: lsof /etc/shadow
+// Output: COMMAND  PID  USER  FD  TYPE  DEVICE  SIZE/OFF  NODE  NAME
+func getUserFromLsof(filePath string) string {
+	out, err := exec.Command("lsof", filePath).Output()
+	if err != nil || len(out) == 0 {
+		return ""
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	seen := make(map[string]bool)
 	var users []string
 
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range lines[1:] { // Skip the header line.
 		fields := strings.Fields(line)
-		if len(fields) < 1 {
+		if len(fields) < 3 {
 			continue
 		}
-		username := fields[0]
-
-		// Skip system users / root (we want the real login user).
+		username := fields[2]
 		if username == "root" || username == "" {
-			continue
+			// Root ran the command via sudo; try to resolve original user
+			// via loginuid of the PID.
+			if len(fields) >= 2 {
+				if origUser := resolveLoginUIDByPID(fields[1]); origUser != "" {
+					username = origUser
+				}
+			}
 		}
-
-		if !seen[username] {
+		if username != "" && username != "root" && !seen[username] {
 			seen[username] = true
 			users = append(users, username)
 		}
 	}
 
-	return users
+	if len(users) > 0 {
+		return strings.Join(users, ", ")
+	}
+	return ""
 }
 
-// getLoginUIDs scans /proc/*/loginuid to find non-root login UIDs.
-// The loginuid is set at login and never changes, even after sudo su.
-// UID 4294967295 (0xFFFFFFFF) means "not set" (kernel default).
-func getLoginUIDs() []string {
+// getUserFromProcFd scans /proc/*/fd to find which process has the file open,
+// then resolves that PID's loginuid to identify the original user.
+func getUserFromProcFd(filePath string) string {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil
+		return ""
+	}
+
+	// Resolve the real path of the target file for comparison.
+	targetReal, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		targetReal = filePath
 	}
 
 	seen := make(map[string]bool)
@@ -178,32 +247,54 @@ func getLoginUIDs() []string {
 		if !entry.IsDir() {
 			continue
 		}
-		// Only look at numeric PID directories.
-		name := entry.Name()
-		if len(name) == 0 || name[0] < '0' || name[0] > '9' {
+		pid := entry.Name()
+		if len(pid) == 0 || pid[0] < '0' || pid[0] > '9' {
 			continue
 		}
 
-		data, err := os.ReadFile(filepath.Join("/proc", name, "loginuid"))
+		fdDir := filepath.Join("/proc", pid, "fd")
+		fds, err := os.ReadDir(fdDir)
 		if err != nil {
 			continue
 		}
 
-		uidStr := strings.TrimSpace(string(data))
-		// Skip unset (4294967295) and root (0).
-		if uidStr == "4294967295" || uidStr == "0" || uidStr == "" {
-			continue
-		}
-
-		if !seen[uidStr] {
-			seen[uidStr] = true
-			username := resolveUID(uidStr)
-			users = append(users, username)
+		for _, fd := range fds {
+			link, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
+			if err != nil {
+				continue
+			}
+			if link == targetReal || link == filePath {
+				// This PID has the file open. Resolve its loginuid.
+				user := resolveLoginUIDByPID(pid)
+				if user != "" && user != "root" && !seen[user] {
+					seen[user] = true
+					users = append(users, user)
+				}
+				break
+			}
 		}
 	}
 
-	return users
+	if len(users) > 0 {
+		return strings.Join(users, ", ")
+	}
+	return ""
 }
+
+// resolveLoginUIDByPID reads /proc/<pid>/loginuid and resolves it to a username.
+func resolveLoginUIDByPID(pid string) string {
+	data, err := os.ReadFile(filepath.Join("/proc", pid, "loginuid"))
+	if err != nil {
+		return ""
+	}
+	uidStr := strings.TrimSpace(string(data))
+	if uidStr == "4294967295" || uidStr == "0" || uidStr == "" {
+		return ""
+	}
+	return resolveUID(uidStr)
+}
+
+
 
 // resolveUID converts a numeric UID to a username by reading /etc/passwd.
 func resolveUID(uid string) string {

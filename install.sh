@@ -92,6 +92,42 @@ chmod 644 "${LOG_FILE}"
 mkdir -p /var/lib/alart-service
 info "State directory created at /var/lib/alart-service/"
 
+# Set up auditd for /etc file-change attribution.
+# This allows the service to identify exactly WHO modified files in /etc,
+# rather than listing all logged-in users.
+info "Setting up audit rules for /etc monitoring..."
+if ! command -v auditctl &>/dev/null; then
+    info "Installing auditd..."
+    if command -v apt-get &>/dev/null; then
+        apt-get install -y auditd audispd-plugins >/dev/null 2>&1 || warn "Could not install auditd (apt)"
+    elif command -v yum &>/dev/null; then
+        yum install -y audit >/dev/null 2>&1 || warn "Could not install auditd (yum)"
+    elif command -v dnf &>/dev/null; then
+        dnf install -y audit >/dev/null 2>&1 || warn "Could not install auditd (dnf)"
+    else
+        warn "Could not install auditd automatically. Install it manually for accurate user attribution."
+    fi
+fi
+
+if command -v auditctl &>/dev/null; then
+    # Add a persistent audit rule to watch /etc for writes.
+    AUDIT_RULE="-w /etc -p wa -k alart-etc-monitor"
+    AUDIT_RULES_FILE="/etc/audit/rules.d/alart-etc.rules"
+
+    # Add rule to live kernel.
+    auditctl ${AUDIT_RULE} 2>/dev/null || true
+
+    # Persist the rule across reboots.
+    echo "${AUDIT_RULE}" > "${AUDIT_RULES_FILE}"
+    chmod 640 "${AUDIT_RULES_FILE}"
+
+    # Restart auditd to pick up the rules.
+    systemctl restart auditd 2>/dev/null || service auditd restart 2>/dev/null || true
+    info "Audit rule installed: watching /etc for write/attribute changes"
+else
+    warn "auditd not available. /etc user detection will use fallback methods (lsof, /proc)."
+fi
+
 info ""
 info "═══════════════════════════════════════════════════════════"
 info "  alart-service installed successfully!"
