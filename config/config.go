@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/alart-service/certmon"
 )
 
 // Config holds all configuration for the alert service.
@@ -27,6 +29,10 @@ type Config struct {
 
 	// /etc directory monitoring settings.
 	EtcMonitor EtcMonitorConfig `json:"etc_monitor"`
+
+	// Kubernetes certificate expiration monitoring (optional, opt-in).
+	// If this section is absent from config.json, the feature is completely disabled.
+	K8sCertMonitor *certmon.K8sCertMonitorConfig `json:"k8s_cert_monitor,omitempty"`
 
 	// Logging configuration.
 	LogFile  string `json:"log_file"`

@@ -17,6 +17,8 @@ Built in pure Go — reads directly from `/proc` and `/sys`, no cgo, no external
 | **Alert Cooldown** | Prevents spam with configurable cooldown per metric |
 | **Config Test** | `alart -t` validates config syntax like nginx |
 | **Live Reload** | `alart -s reload` applies config changes without restart |
+| **VM Reboot Detection** | Alerts on unexpected reboots vs clean restarts |
+| **K8s Cert Monitor** | Opt-in: alerts when Kubernetes certificates approach expiry |
 | **Systemd Ready** | Ships with unit file, runs as a proper service |
 
 ## Quick Start
@@ -148,6 +150,37 @@ sudo tail -f /var/log/alart-service.log
 | `log_file` | string | `"/var/log/alart-service.log"` | Log file path (`"stdout"` for console) |
 | `log_level` | string | `"info"` | Log verbosity |
 
+### K8s Certificate Monitoring (Opt-in)
+
+This feature is **disabled by default**. To enable it, add the `k8s_cert_monitor` section to your config:
+
+```json
+{
+  "discord_webhook_url": "...",
+  "check_interval": "30s",
+  "alert_cooldown": "5m",
+  "thresholds": { ... },
+  "etc_monitor": { ... },
+
+  "k8s_cert_monitor": {
+    "check_interval": "6h",
+    "cert_paths": ["/etc/kubernetes/pki"],
+    "warning_days": [30, 14, 7, 1]
+  },
+
+  "log_file": "/var/log/alart-service.log",
+  "log_level": "info"
+}
+```
+
+**If `k8s_cert_monitor` is not present in config.json, the feature is completely off.** No scanning, no alerts, no overhead.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `k8s_cert_monitor.check_interval` | string | `"6h"` | How often to scan certificates |
+| `k8s_cert_monitor.cert_paths` | []string | `["/etc/kubernetes/pki"]` | Directories/files to scan for .crt/.pem |
+| `k8s_cert_monitor.warning_days` | []int | `[30, 14, 7, 1]` | Alert at these day thresholds before expiry |
+
 ## Typical Workflow
 
 ```bash
@@ -205,11 +238,15 @@ alart-service/
 ├── alerter/              # Threshold evaluation & cooldown logic
 │   ├── alerter.go
 │   └── hostname.go
-├── notifier/             # Discord webhook client
+├── certmon/              # K8s certificate expiration monitor (opt-in)
+│   └── certmon.go
+├── notifier/             # Discord webhook client (rich embeds)
 │   └── discord.go
 ├── watcher/              # /etc inotify filesystem monitor
 │   ├── etc_watcher.go
 │   └── inotify_linux.go
+├── assets/               # Logo and static assets
+│   └── logo.png
 ├── deploy/               # Systemd unit & sample config
 │   ├── alart-service.service
 │   └── config.sample.json

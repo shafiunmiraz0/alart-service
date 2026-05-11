@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alart-service/alerter"
+	"github.com/alart-service/certmon"
 	"github.com/alart-service/config"
 	"github.com/alart-service/monitor"
 	"github.com/alart-service/notifier"
@@ -252,6 +253,15 @@ func runDaemon(configPath string) {
 	// Start metrics loop.
 	go metricsLoop(ctx, cfg, collector, alert)
 
+	// Start K8s cert monitor (only if configured).
+	certMon := certmon.New(cfg.K8sCertMonitor, discord)
+	if certMon != nil {
+		log.Println("[cert-monitor] K8s certificate monitoring enabled")
+		go certMon.Start()
+	} else {
+		log.Println("[cert-monitor] disabled (k8s_cert_monitor not in config)")
+	}
+
 	// Listen for signals.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1)
@@ -286,6 +296,15 @@ func runDaemon(configPath string) {
 			ctx, cancel = context.WithCancel(context.Background())
 			go metricsLoop(ctx, cfg, collector, alert)
 
+			// Restart cert monitor if config changed.
+			if certMon != nil {
+				certMon.Stop()
+			}
+			certMon = certmon.New(cfg.K8sCertMonitor, discord)
+			if certMon != nil {
+				go certMon.Start()
+			}
+
 			log.Printf("[RELOAD] Configuration reloaded successfully")
 
 			_ = discord.SendAlert(notifier.Alert{
@@ -309,6 +328,9 @@ func runDaemon(configPath string) {
 
 			cancel()
 			etcWatcher.Stop()
+			if certMon != nil {
+				certMon.Stop()
+			}
 
 			// Mark clean shutdown in state file.
 			saveState(&serviceState{
