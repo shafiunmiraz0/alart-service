@@ -100,6 +100,7 @@ alart -t
 
 ```bash
 sudo systemctl start alart-service
+sudo systemctl enable alart-service
 sudo systemctl status alart-service
 ```
 
