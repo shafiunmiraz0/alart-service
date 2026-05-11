@@ -88,6 +88,10 @@ systemctl enable alart-service
 touch "${LOG_FILE}"
 chmod 644 "${LOG_FILE}"
 
+# Create state directory (for boot/reboot detection).
+mkdir -p /var/lib/alart-service
+info "State directory created at /var/lib/alart-service/"
+
 info ""
 info "═══════════════════════════════════════════════════════════"
 info "  alart-service installed successfully!"

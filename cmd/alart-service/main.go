@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,8 +24,16 @@ import (
 const (
 	defaultConfigPath = "/etc/alart-service/config.json"
 	pidFilePath       = "/var/run/alart-service.pid"
+	stateFilePath     = "/var/lib/alart-service/state.json"
 	version           = "1.0.0"
 )
+
+// serviceState tracks boot info for detecting reboots.
+type serviceState struct {
+	LastBootID    string `json:"last_boot_id"`
+	LastShutdown  string `json:"last_shutdown"`
+	CleanShutdown bool   `json:"clean_shutdown"`
+}
 
 func main() {
 	var (
@@ -42,13 +51,11 @@ func main() {
 	flag.StringVar(&signalCmd, "s", "", "Send signal to running process: reload, stop, reopen")
 	flag.Parse()
 
-	// --- Mode: version ---
 	if showVersion {
 		fmt.Printf("alart-service v%s\n", version)
 		os.Exit(0)
 	}
 
-	// --- Mode: generate config ---
 	if genConfig {
 		if err := config.GenerateDefault(configPath); err != nil {
 			log.Fatalf("Failed to generate config: %v", err)
@@ -58,27 +65,26 @@ func main() {
 		os.Exit(0)
 	}
 
-	// --- Mode: test config (alart -t) ---
 	if testConfig {
 		runTestConfig(configPath)
 		return
 	}
 
-	// --- Mode: send signal (alart -s reload|stop) ---
 	if signalCmd != "" {
 		runSignalCommand(signalCmd)
 		return
 	}
 
-	// --- Mode: run as daemon ---
 	runDaemon(configPath)
 }
 
-// runTestConfig validates the configuration file and prints results like nginx -t.
+// =============================================================================
+// Config Test (alart -t)
+// =============================================================================
+
 func runTestConfig(configPath string) {
 	fmt.Printf("alart-service: testing configuration file %s\n", configPath)
 
-	// Step 1: Check file exists and is readable.
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		fmt.Printf("alart-service: [ERROR] cannot read %s (%v)\n", configPath, err)
@@ -86,10 +92,8 @@ func runTestConfig(configPath string) {
 		os.Exit(1)
 	}
 
-	// Step 2: Check JSON syntax.
 	var raw json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		// Try to provide a helpful line/column hint.
 		if syntaxErr, ok := err.(*json.SyntaxError); ok {
 			line, col := findLineCol(data, syntaxErr.Offset)
 			fmt.Printf("alart-service: [ERROR] JSON syntax error in %s at line %d, column %d:\n", configPath, line, col)
@@ -102,76 +106,41 @@ func runTestConfig(configPath string) {
 		os.Exit(1)
 	}
 
-	// Step 3: Unmarshal into config struct.
 	cfg := config.DefaultConfig()
 	if err := json.Unmarshal(data, cfg); err != nil {
 		fmt.Printf("alart-service: [ERROR] invalid config structure in %s:\n", configPath)
-		if ute, ok := err.(*json.UnmarshalTypeError); ok {
-			fmt.Printf("  → field %q expects %s, got %s\n", ute.Field, ute.Type, ute.Value)
-		} else {
-			fmt.Printf("  → %s\n", err.Error())
-		}
+		fmt.Printf("  → %s\n", err.Error())
 		fmt.Printf("alart-service: configuration file %s test failed\n", configPath)
 		os.Exit(1)
 	}
 
-	// Step 4: Validate logic (thresholds, durations, webhook).
-	var warnings []string
-	var errors []string
+	var warnings, errors []string
 
-	// Validate webhook URL.
 	if cfg.DiscordWebhookURL == "" {
 		errors = append(errors, "discord_webhook_url is required but empty")
 	} else if cfg.DiscordWebhookURL == "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN" {
-		warnings = append(warnings, "discord_webhook_url is still set to the placeholder — update it before starting")
-	} else if !strings.HasPrefix(cfg.DiscordWebhookURL, "https://discord.com/api/webhooks/") &&
-		!strings.HasPrefix(cfg.DiscordWebhookURL, "https://discordapp.com/api/webhooks/") {
-		warnings = append(warnings, fmt.Sprintf("discord_webhook_url %q doesn't look like a valid Discord webhook URL", cfg.DiscordWebhookURL))
+		warnings = append(warnings, "discord_webhook_url is still set to the placeholder")
 	}
 
-	// Validate durations.
 	if _, err := time.ParseDuration(cfg.CheckInterval); err != nil {
-		errors = append(errors, fmt.Sprintf("check_interval %q is not a valid duration: %v", cfg.CheckInterval, err))
+		errors = append(errors, fmt.Sprintf("check_interval %q is invalid: %v", cfg.CheckInterval, err))
 	}
 	if _, err := time.ParseDuration(cfg.AlertCooldown); err != nil {
-		errors = append(errors, fmt.Sprintf("alert_cooldown %q is not a valid duration: %v", cfg.AlertCooldown, err))
+		errors = append(errors, fmt.Sprintf("alert_cooldown %q is invalid: %v", cfg.AlertCooldown, err))
 	}
-
-	// Validate thresholds.
 	if cfg.Thresholds.CPUPercent <= 0 || cfg.Thresholds.CPUPercent > 100 {
-		errors = append(errors, fmt.Sprintf("thresholds.cpu_percent must be 0-100, got %.1f", cfg.Thresholds.CPUPercent))
+		errors = append(errors, fmt.Sprintf("cpu_percent must be 0-100, got %.1f", cfg.Thresholds.CPUPercent))
 	}
 	if cfg.Thresholds.RAMPercent <= 0 || cfg.Thresholds.RAMPercent > 100 {
-		errors = append(errors, fmt.Sprintf("thresholds.ram_percent must be 0-100, got %.1f", cfg.Thresholds.RAMPercent))
+		errors = append(errors, fmt.Sprintf("ram_percent must be 0-100, got %.1f", cfg.Thresholds.RAMPercent))
 	}
 	if cfg.Thresholds.DiskPercent <= 0 || cfg.Thresholds.DiskPercent > 100 {
-		errors = append(errors, fmt.Sprintf("thresholds.disk_percent must be 0-100, got %.1f", cfg.Thresholds.DiskPercent))
-	}
-	if cfg.Thresholds.DiskIOReadMBps < 0 {
-		errors = append(errors, fmt.Sprintf("thresholds.disk_io_read_mbps must be >= 0, got %.1f", cfg.Thresholds.DiskIOReadMBps))
-	}
-	if cfg.Thresholds.DiskIOWriteMBps < 0 {
-		errors = append(errors, fmt.Sprintf("thresholds.disk_io_write_mbps must be >= 0, got %.1f", cfg.Thresholds.DiskIOWriteMBps))
-	}
-	if cfg.Thresholds.NetRxMBps < 0 {
-		errors = append(errors, fmt.Sprintf("thresholds.net_rx_mbps must be >= 0, got %.1f", cfg.Thresholds.NetRxMBps))
-	}
-	if cfg.Thresholds.NetTxMBps < 0 {
-		errors = append(errors, fmt.Sprintf("thresholds.net_tx_mbps must be >= 0, got %.1f", cfg.Thresholds.NetTxMBps))
+		errors = append(errors, fmt.Sprintf("disk_percent must be 0-100, got %.1f", cfg.Thresholds.DiskPercent))
 	}
 
-	// Validate log level.
-	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
-	if cfg.LogLevel != "" && !validLevels[cfg.LogLevel] {
-		warnings = append(warnings, fmt.Sprintf("log_level %q is not one of: debug, info, warn, error", cfg.LogLevel))
-	}
-
-	// Print warnings.
 	for _, w := range warnings {
 		fmt.Printf("alart-service: [WARN]  %s\n", w)
 	}
-
-	// Print errors.
 	if len(errors) > 0 {
 		for _, e := range errors {
 			fmt.Printf("alart-service: [ERROR] %s\n", e)
@@ -180,12 +149,14 @@ func runTestConfig(configPath string) {
 		os.Exit(1)
 	}
 
-	// All good.
 	fmt.Printf("alart-service: the configuration file %s syntax is ok\n", configPath)
 	fmt.Printf("alart-service: configuration file %s test is successful\n", configPath)
 }
 
-// runSignalCommand sends a signal to the running alart-service process.
+// =============================================================================
+// Signal Commands (alart -s reload|stop|reopen)
+// =============================================================================
+
 func runSignalCommand(cmd string) {
 	switch strings.ToLower(cmd) {
 	case "reload":
@@ -201,31 +172,26 @@ func runSignalCommand(cmd string) {
 	}
 }
 
-// sendSignalToProcess reads the PID file and sends the given signal.
 func sendSignalToProcess(sig syscall.Signal, action string) {
 	data, err := os.ReadFile(pidFilePath)
 	if err != nil {
 		fmt.Printf("alart-service: [ERROR] cannot read PID file %s\n", pidFilePath)
-		fmt.Println("  Is alart-service running?")
-		fmt.Printf("  Hint: check with 'systemctl status alart-service'\n")
+		fmt.Println("  Is alart-service running? Check: systemctl status alart-service")
 		os.Exit(1)
 	}
 
-	pidStr := strings.TrimSpace(string(data))
-	pid, err := strconv.Atoi(pidStr)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
-		fmt.Printf("alart-service: [ERROR] invalid PID in %s: %q\n", pidFilePath, pidStr)
+		fmt.Printf("alart-service: [ERROR] invalid PID in %s\n", pidFilePath)
 		os.Exit(1)
 	}
 
-	// Check if process is actually running.
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		fmt.Printf("alart-service: [ERROR] process %d not found\n", pid)
 		os.Exit(1)
 	}
 
-	// On Linux, FindProcess always succeeds. Send signal 0 to check.
 	if err := proc.Signal(syscall.Signal(0)); err != nil {
 		fmt.Printf("alart-service: [ERROR] process %d is not running (%v)\n", pid, err)
 		fmt.Printf("  Stale PID file? Remove it: sudo rm %s\n", pidFilePath)
@@ -237,50 +203,45 @@ func sendSignalToProcess(sig syscall.Signal, action string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("alart-service: signal %q sent to process %d (PID: %d)\n", action, pid, pid)
+	fmt.Printf("alart-service: signal %q sent to process %d\n", action, pid)
 }
 
-// runDaemon starts the main service loop.
+// =============================================================================
+// Daemon
+// =============================================================================
+
 func runDaemon(configPath string) {
-	// Load configuration.
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Setup logging.
 	setupLogging(cfg)
 
-	// Write PID file.
 	if err := writePIDFile(); err != nil {
 		log.Printf("[WARN] Failed to write PID file: %v", err)
 	}
 	defer removePIDFile()
 
+	hostname, _ := os.Hostname()
+
 	log.Printf("alart-service v%s starting (PID: %d)", version, os.Getpid())
 	log.Printf("Config: %s", configPath)
 	log.Printf("Check interval: %s | Alert cooldown: %s", cfg.CheckInterval, cfg.AlertCooldown)
-	log.Printf("Thresholds — CPU: %.0f%% | RAM: %.0f%% | Disk: %.0f%%",
-		cfg.Thresholds.CPUPercent, cfg.Thresholds.RAMPercent, cfg.Thresholds.DiskPercent)
 
-	// Initialize components.
-	discord := notifier.NewDiscord(cfg.DiscordWebhookURL)
+	// Initialize Discord notifier.
+	discord := notifier.NewDiscord(cfg.DiscordWebhookURL, cfg.DiscordAvatarURL)
 	collector := monitor.NewCollector()
 	alert := alerter.New(cfg, discord)
 
-	// Send startup notification.
-	hostname, _ := os.Hostname()
-	startupMsg := fmt.Sprintf("✅ **alart-service started**\n🖥️ Host: `%s`\n📊 Monitoring: CPU, RAM, Disk, I/O, Network\n🔐 /etc Monitor: %v\n⏰ %s",
-		hostname, cfg.EtcMonitor.Enabled, time.Now().Format("2006-01-02 15:04:05 MST"))
-	if err := discord.Send(startupMsg); err != nil {
-		log.Printf("[WARN] Failed to send startup notification: %v", err)
-	}
+	// --- VM Boot/Reboot Detection ---
+	sendStartupAlert(discord, hostname)
 
 	// Context for graceful shutdown.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start /etc watcher in a goroutine.
+	// Start /etc watcher.
 	etcWatcher := watcher.New(&cfg.EtcMonitor, discord)
 	go func() {
 		if err := etcWatcher.Start(); err != nil {
@@ -288,10 +249,10 @@ func runDaemon(configPath string) {
 		}
 	}()
 
-	// Start the metrics collection loop.
+	// Start metrics loop.
 	go metricsLoop(ctx, cfg, collector, alert)
 
-	// Listen for signals: SIGINT/SIGTERM for shutdown, SIGHUP for reload.
+	// Listen for signals.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1)
 
@@ -300,26 +261,19 @@ func runDaemon(configPath string) {
 
 		switch sig {
 		case syscall.SIGHUP:
-			// --- Config reload ---
 			log.Println("[RELOAD] Received SIGHUP, reloading configuration...")
 
 			newCfg, err := config.Load(configPath)
 			if err != nil {
-				log.Printf("[RELOAD] ERROR: failed to load config: %v", err)
-				log.Println("[RELOAD] Keeping current configuration")
+				log.Printf("[RELOAD] ERROR: %v — keeping current config", err)
 				continue
 			}
 
-			// Apply changes.
 			cfg = newCfg
-
-			// Update Discord notifier.
 			discord.UpdateWebhookURL(cfg.DiscordWebhookURL)
-
-			// Update alerter with new config.
+			discord.UpdateAvatarURL(cfg.DiscordAvatarURL)
 			alert.Reload(cfg)
 
-			// Restart the /etc watcher with new config.
 			etcWatcher.Stop()
 			etcWatcher = watcher.New(&cfg.EtcMonitor, discord)
 			go func() {
@@ -328,38 +282,51 @@ func runDaemon(configPath string) {
 				}
 			}()
 
-			// Restart metrics loop with new interval.
 			cancel()
 			ctx, cancel = context.WithCancel(context.Background())
 			go metricsLoop(ctx, cfg, collector, alert)
 
 			log.Printf("[RELOAD] Configuration reloaded successfully")
-			log.Printf("[RELOAD] Check interval: %s | Alert cooldown: %s", cfg.CheckInterval, cfg.AlertCooldown)
-			log.Printf("[RELOAD] Thresholds — CPU: %.0f%% | RAM: %.0f%% | Disk: %.0f%%",
-				cfg.Thresholds.CPUPercent, cfg.Thresholds.RAMPercent, cfg.Thresholds.DiskPercent)
 
-			// Notify via Discord.
-			reloadMsg := fmt.Sprintf("🔄 **alart-service config reloaded**\n🖥️ Host: `%s`\n⏰ %s",
-				hostname, time.Now().Format("2006-01-02 15:04:05 MST"))
-			_ = discord.Send(reloadMsg)
+			_ = discord.SendAlert(notifier.Alert{
+				Title:       "🔄 Configuration Reloaded",
+				Description: "The service configuration has been reloaded successfully.",
+				Color:       notifier.ColorInfo,
+				Fields: []notifier.Field{
+					{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", hostname), Inline: true},
+					{Name: "⏱️ Interval", Value: cfg.CheckInterval, Inline: true},
+					{Name: "⏳ Cooldown", Value: cfg.AlertCooldown, Inline: true},
+				},
+			})
 
 		case syscall.SIGUSR1:
-			// Reopen log file (useful for log rotation).
-			log.Println("[REOPEN] Received SIGUSR1, reopening log file...")
+			log.Println("[REOPEN] Reopening log file...")
 			setupLogging(cfg)
 			log.Println("[REOPEN] Log file reopened")
 
 		case syscall.SIGINT, syscall.SIGTERM:
 			log.Printf("Received signal %v, shutting down...", sig)
 
-			// Graceful shutdown.
 			cancel()
 			etcWatcher.Stop()
 
-			// Send shutdown notification.
-			shutdownMsg := fmt.Sprintf("🛑 **alart-service stopped**\n🖥️ Host: `%s`\n⏰ %s",
-				hostname, time.Now().Format("2006-01-02 15:04:05 MST"))
-			_ = discord.Send(shutdownMsg)
+			// Mark clean shutdown in state file.
+			saveState(&serviceState{
+				LastBootID:    readBootID(),
+				LastShutdown:  time.Now().UTC().Format(time.RFC3339),
+				CleanShutdown: true,
+			})
+
+			_ = discord.SendAlert(notifier.Alert{
+				Title:       "🛑 Service Stopped",
+				Description: "alart-service is shutting down gracefully.",
+				Color:       notifier.ColorCritical,
+				Fields: []notifier.Field{
+					{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", hostname), Inline: true},
+					{Name: "📋 Signal", Value: fmt.Sprintf("`%s`", sig.String()), Inline: true},
+					{Name: "⏰ Time", Value: time.Now().Format("2006-01-02 15:04:05 MST"), Inline: true},
+				},
+			})
 
 			log.Println("alart-service stopped")
 			return
@@ -367,13 +334,134 @@ func runDaemon(configPath string) {
 	}
 }
 
-// metricsLoop periodically collects system metrics and evaluates alerts.
+// =============================================================================
+// VM Boot / Reboot Detection
+// =============================================================================
+
+func sendStartupAlert(discord *notifier.Discord, hostname string) {
+	bootID := readBootID()
+	prevState := loadState()
+	uptimeStr := readUptimeString()
+
+	var title, description string
+	var color int
+
+	switch {
+	case prevState == nil:
+		// First time ever.
+		title = "✅ Service Started"
+		description = "alart-service is running for the first time on this host."
+		color = notifier.ColorSuccess
+
+	case prevState.LastBootID != bootID && prevState.CleanShutdown:
+		// Different boot, was cleanly shut down → clean reboot.
+		title = "🔄 VM Rebooted (Clean)"
+		description = "The system was rebooted after a clean shutdown."
+		color = notifier.ColorWarning
+
+	case prevState.LastBootID != bootID && !prevState.CleanShutdown:
+		// Different boot, NOT cleanly shut down → unexpected reboot/crash.
+		title = "⚠️ VM Rebooted (Unexpected!)"
+		description = "The system rebooted **without a clean shutdown** — possible crash, power loss, or forced restart."
+		color = notifier.ColorCritical
+
+	case prevState.LastBootID == bootID:
+		// Same boot → service restarted (not a reboot).
+		title = "✅ Service Restarted"
+		description = "The service was restarted within the same boot session."
+		color = notifier.ColorSuccess
+	}
+
+	fields := []notifier.Field{
+		{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", hostname), Inline: true},
+		{Name: "⏱️ Uptime", Value: uptimeStr, Inline: true},
+		{Name: "🔖 Version", Value: fmt.Sprintf("`v%s`", version), Inline: true},
+	}
+
+	if prevState != nil && prevState.LastShutdown != "" {
+		fields = append(fields, notifier.Field{
+			Name: "🕐 Last Shutdown", Value: prevState.LastShutdown, Inline: false,
+		})
+	}
+
+	if err := discord.SendAlert(notifier.Alert{
+		Title:       title,
+		Description: description,
+		Color:       color,
+		Fields:      fields,
+	}); err != nil {
+		log.Printf("[WARN] Failed to send startup notification: %v", err)
+	}
+
+	// Mark as NOT cleanly shut down (will be overwritten on clean exit).
+	saveState(&serviceState{
+		LastBootID:    bootID,
+		LastShutdown:  "",
+		CleanShutdown: false,
+	})
+}
+
+func readBootID() string {
+	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func readUptimeString() string {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return "unknown"
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 1 {
+		return "unknown"
+	}
+	secs, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return "unknown"
+	}
+	d := time.Duration(secs * float64(time.Second))
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
+}
+
+func loadState() *serviceState {
+	data, err := os.ReadFile(stateFilePath)
+	if err != nil {
+		return nil
+	}
+	var s serviceState
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil
+	}
+	return &s
+}
+
+func saveState(s *serviceState) {
+	_ = os.MkdirAll(filepath.Dir(stateFilePath), 0755)
+	data, _ := json.MarshalIndent(s, "", "  ")
+	_ = os.WriteFile(stateFilePath, data, 0644)
+}
+
+// =============================================================================
+// Metrics Loop
+// =============================================================================
+
 func metricsLoop(ctx context.Context, cfg *config.Config, collector *monitor.Collector, alert *alerter.Alerter) {
 	interval := cfg.GetCheckInterval()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Do an initial collection to seed delta calculations.
 	if _, err := collector.Collect(); err != nil {
 		log.Printf("[WARN] Initial collection failed: %v", err)
 	}
@@ -392,17 +480,19 @@ func metricsLoop(ctx context.Context, cfg *config.Config, collector *monitor.Col
 				continue
 			}
 
-			log.Printf("[METRICS] CPU: %.1f%% | RAM: %.1f%% | Net RX: %.1f MB/s TX: %.1f MB/s | DiskIO R: %.1f W: %.1f MB/s",
+			log.Printf("[METRICS] CPU: %.1f%% | RAM: %.1f%% | Net RX: %.1f TX: %.1f MB/s",
 				metrics.CPUPercent, metrics.RAMPercent,
-				metrics.NetRxMBps, metrics.NetTxMBps,
-				metrics.DiskIOReadMBps, metrics.DiskIOWriteMBps)
+				metrics.NetRxMBps, metrics.NetTxMBps)
 
 			alert.Evaluate(metrics)
 		}
 	}
 }
 
-// setupLogging configures the log output.
+// =============================================================================
+// Helpers
+// =============================================================================
+
 func setupLogging(cfg *config.Config) {
 	if cfg.LogFile == "" || cfg.LogFile == "stdout" {
 		log.SetOutput(os.Stdout)
@@ -420,18 +510,14 @@ func setupLogging(cfg *config.Config) {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 }
 
-// writePIDFile writes the current process ID to the PID file.
 func writePIDFile() error {
-	pid := os.Getpid()
-	return os.WriteFile(pidFilePath, []byte(strconv.Itoa(pid)+"\n"), 0644)
+	return os.WriteFile(pidFilePath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0644)
 }
 
-// removePIDFile removes the PID file on shutdown.
 func removePIDFile() {
 	_ = os.Remove(pidFilePath)
 }
 
-// findLineCol converts a byte offset into a line and column number for error reporting.
 func findLineCol(data []byte, offset int64) (line, col int) {
 	line = 1
 	col = 1

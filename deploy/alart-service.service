@@ -18,9 +18,12 @@ RestartSec=5
 # PID file for CLI signal commands (alart -s reload)
 PIDFile=/var/run/alart-service.pid
 
+# State directory for boot detection
+StateDirectory=alart-service
+
 # Hardening
 ProtectSystem=strict
-ReadWritePaths=/var/log /etc/alart-service /var/run
+ReadWritePaths=/var/log /etc/alart-service /var/run /var/lib/alart-service
 ProtectHome=true
 NoNewPrivileges=false
 PrivateTmp=true

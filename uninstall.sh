@@ -108,6 +108,11 @@ if [[ "$PURGE" == true ]]; then
         rm -f /var/log/alart-service.log
         step "Removed /var/log/alart-service.log"
     fi
+    if [[ -d /var/lib/alart-service ]]; then
+        info "Purging state directory..."
+        rm -rf /var/lib/alart-service
+        step "Removed /var/lib/alart-service/"
+    fi
 else
     echo ""
     if [[ -d /etc/alart-service ]]; then

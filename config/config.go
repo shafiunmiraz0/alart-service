@@ -12,6 +12,9 @@ type Config struct {
 	// Discord webhook URL for sending alerts.
 	DiscordWebhookURL string `json:"discord_webhook_url"`
 
+	// Custom avatar URL for the Discord bot (optional, defaults to project logo).
+	DiscordAvatarURL string `json:"discord_avatar_url,omitempty"`
+
 	// How often to check system metrics (e.g. "30s", "1m", "5m").
 	CheckInterval string `json:"check_interval"`
 

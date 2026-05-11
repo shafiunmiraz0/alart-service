@@ -78,28 +78,30 @@ func (w *EtcWatcher) notifyFileEvent(eventType, filePath string) {
 		return
 	}
 
-	// Try to get file info for context.
-	info := ""
+	// Try to get file size for context.
+	sizeInfo := "—"
 	if stat, err := os.Stat(filePath); err == nil {
-		info = fmt.Sprintf("\nSize: %d bytes | Modified: %s",
-			stat.Size(), stat.ModTime().Format("2006-01-02 15:04:05"))
+		sizeInfo = fmt.Sprintf("%d bytes", stat.Size())
 	}
 
 	// Try to determine who made the change using /proc.
 	user := detectUser()
 
-	message := fmt.Sprintf(
-		"🔐 **/etc Monitor Alert**\n"+
-			"🖥️ Host: `%s`\n"+
-			"📁 Event: **%s**\n"+
-			"📄 Path: `%s`\n"+
-			"👤 User: `%s`%s\n"+
-			"⏰ %s",
-		w.hostname, eventType, filePath, user, info,
-		time.Now().Format("2006-01-02 15:04:05 MST"),
-	)
+	alert := notifier.Alert{
+		Title:       "🔐 /etc Monitor Alert",
+		Description: fmt.Sprintf("A filesystem event was detected in `/etc`."),
+		Color:       notifier.ColorSecurity,
+		Fields: []notifier.Field{
+			{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", w.hostname), Inline: true},
+			{Name: "📁 Event", Value: fmt.Sprintf("**%s**", eventType), Inline: true},
+			{Name: "👤 User", Value: fmt.Sprintf("`%s`", user), Inline: true},
+			{Name: "📄 Path", Value: fmt.Sprintf("`%s`", filePath), Inline: false},
+			{Name: "📊 Size", Value: sizeInfo, Inline: true},
+			{Name: "⏰ Time", Value: time.Now().Format("2006-01-02 15:04:05 MST"), Inline: true},
+		},
+	}
 
-	if err := w.discord.Send(message); err != nil {
+	if err := w.discord.SendAlert(alert); err != nil {
 		log.Printf("[etc-watcher] failed to send alert: %v", err)
 	}
 }

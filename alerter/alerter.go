@@ -41,22 +41,36 @@ func (a *Alerter) Reload(cfg *config.Config) {
 
 // Evaluate checks all metrics against thresholds and sends alerts if needed.
 func (a *Alerter) Evaluate(m *monitor.SystemMetrics) {
+	hostname := getHostname()
+
 	// CPU
 	if m.CPUPercent > a.cfg.Thresholds.CPUPercent {
-		a.sendIfCooldown("cpu", fmt.Sprintf(
-			"🔥 **CPU Alert**\nUsage: **%.1f%%** (threshold: %.1f%%)",
-			m.CPUPercent, a.cfg.Thresholds.CPUPercent,
-		))
+		a.sendIfCooldown("cpu", notifier.Alert{
+			Title:       "🔥 CPU Alert",
+			Description: "CPU usage has exceeded the configured threshold.",
+			Color:       notifier.ColorDanger,
+			Fields: []notifier.Field{
+				{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", hostname), Inline: true},
+				{Name: "📊 Usage", Value: fmt.Sprintf("**%.1f%%**", m.CPUPercent), Inline: true},
+				{Name: "⚠️ Threshold", Value: fmt.Sprintf("%.1f%%", a.cfg.Thresholds.CPUPercent), Inline: true},
+			},
+		})
 	}
 
 	// RAM
 	if m.RAMPercent > a.cfg.Thresholds.RAMPercent {
 		usedGB := float64(m.RAMUsed) / (1024 * 1024 * 1024)
 		totalGB := float64(m.RAMTotal) / (1024 * 1024 * 1024)
-		a.sendIfCooldown("ram", fmt.Sprintf(
-			"🧠 **RAM Alert**\nUsage: **%.1f%%** (%.1f / %.1f GB)\nThreshold: %.1f%%",
-			m.RAMPercent, usedGB, totalGB, a.cfg.Thresholds.RAMPercent,
-		))
+		a.sendIfCooldown("ram", notifier.Alert{
+			Title:       "🧠 RAM Alert",
+			Description: "Memory usage has exceeded the configured threshold.",
+			Color:       notifier.ColorDanger,
+			Fields: []notifier.Field{
+				{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", hostname), Inline: true},
+				{Name: "📊 Usage", Value: fmt.Sprintf("**%.1f%%** (%.1f/%.1f GB)", m.RAMPercent, usedGB, totalGB), Inline: true},
+				{Name: "⚠️ Threshold", Value: fmt.Sprintf("%.1f%%", a.cfg.Thresholds.RAMPercent), Inline: true},
+			},
+		})
 	}
 
 	// Disk usage
@@ -65,44 +79,74 @@ func (a *Alerter) Evaluate(m *monitor.SystemMetrics) {
 			key := fmt.Sprintf("disk_%s", d.MountPoint)
 			totalGB := float64(d.Total) / (1024 * 1024 * 1024)
 			usedGB := float64(d.Used) / (1024 * 1024 * 1024)
-			a.sendIfCooldown(key, fmt.Sprintf(
-				"💾 **Disk Alert** — `%s` (`%s`)\nUsage: **%.1f%%** (%.1f / %.1f GB)\nThreshold: %.1f%%",
-				d.MountPoint, d.Device, d.Percent, usedGB, totalGB, a.cfg.Thresholds.DiskPercent,
-			))
+			a.sendIfCooldown(key, notifier.Alert{
+				Title:       "💾 Disk Alert",
+				Description: fmt.Sprintf("Disk usage on `%s` (`%s`) exceeded threshold.", d.MountPoint, d.Device),
+				Color:       notifier.ColorDanger,
+				Fields: []notifier.Field{
+					{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", hostname), Inline: true},
+					{Name: "📊 Usage", Value: fmt.Sprintf("**%.1f%%** (%.1f/%.1f GB)", d.Percent, usedGB, totalGB), Inline: true},
+					{Name: "⚠️ Threshold", Value: fmt.Sprintf("%.1f%%", a.cfg.Thresholds.DiskPercent), Inline: true},
+				},
+			})
 		}
 	}
 
 	// Disk I/O
 	if m.DiskIOReadMBps > a.cfg.Thresholds.DiskIOReadMBps {
-		a.sendIfCooldown("diskio_read", fmt.Sprintf(
-			"📖 **Disk I/O Read Alert**\nRate: **%.1f MB/s** (threshold: %.1f MB/s)",
-			m.DiskIOReadMBps, a.cfg.Thresholds.DiskIOReadMBps,
-		))
+		a.sendIfCooldown("diskio_read", notifier.Alert{
+			Title:       "📖 Disk I/O Read Alert",
+			Description: "Disk read rate has exceeded the configured threshold.",
+			Color:       notifier.ColorWarning,
+			Fields: []notifier.Field{
+				{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", hostname), Inline: true},
+				{Name: "📊 Rate", Value: fmt.Sprintf("**%.1f MB/s**", m.DiskIOReadMBps), Inline: true},
+				{Name: "⚠️ Threshold", Value: fmt.Sprintf("%.1f MB/s", a.cfg.Thresholds.DiskIOReadMBps), Inline: true},
+			},
+		})
 	}
 	if m.DiskIOWriteMBps > a.cfg.Thresholds.DiskIOWriteMBps {
-		a.sendIfCooldown("diskio_write", fmt.Sprintf(
-			"✏️ **Disk I/O Write Alert**\nRate: **%.1f MB/s** (threshold: %.1f MB/s)",
-			m.DiskIOWriteMBps, a.cfg.Thresholds.DiskIOWriteMBps,
-		))
+		a.sendIfCooldown("diskio_write", notifier.Alert{
+			Title:       "✏️ Disk I/O Write Alert",
+			Description: "Disk write rate has exceeded the configured threshold.",
+			Color:       notifier.ColorWarning,
+			Fields: []notifier.Field{
+				{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", hostname), Inline: true},
+				{Name: "📊 Rate", Value: fmt.Sprintf("**%.1f MB/s**", m.DiskIOWriteMBps), Inline: true},
+				{Name: "⚠️ Threshold", Value: fmt.Sprintf("%.1f MB/s", a.cfg.Thresholds.DiskIOWriteMBps), Inline: true},
+			},
+		})
 	}
 
 	// Network
 	if m.NetRxMBps > a.cfg.Thresholds.NetRxMBps {
-		a.sendIfCooldown("net_rx", fmt.Sprintf(
-			"📥 **Network RX Alert**\nRate: **%.1f MB/s** (threshold: %.1f MB/s)",
-			m.NetRxMBps, a.cfg.Thresholds.NetRxMBps,
-		))
+		a.sendIfCooldown("net_rx", notifier.Alert{
+			Title:       "📥 Network RX Alert",
+			Description: "Network receive rate has exceeded the configured threshold.",
+			Color:       notifier.ColorWarning,
+			Fields: []notifier.Field{
+				{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", hostname), Inline: true},
+				{Name: "📊 Rate", Value: fmt.Sprintf("**%.1f MB/s**", m.NetRxMBps), Inline: true},
+				{Name: "⚠️ Threshold", Value: fmt.Sprintf("%.1f MB/s", a.cfg.Thresholds.NetRxMBps), Inline: true},
+			},
+		})
 	}
 	if m.NetTxMBps > a.cfg.Thresholds.NetTxMBps {
-		a.sendIfCooldown("net_tx", fmt.Sprintf(
-			"📤 **Network TX Alert**\nRate: **%.1f MB/s** (threshold: %.1f MB/s)",
-			m.NetTxMBps, a.cfg.Thresholds.NetTxMBps,
-		))
+		a.sendIfCooldown("net_tx", notifier.Alert{
+			Title:       "📤 Network TX Alert",
+			Description: "Network transmit rate has exceeded the configured threshold.",
+			Color:       notifier.ColorWarning,
+			Fields: []notifier.Field{
+				{Name: "🖥️ Host", Value: fmt.Sprintf("`%s`", hostname), Inline: true},
+				{Name: "📊 Rate", Value: fmt.Sprintf("**%.1f MB/s**", m.NetTxMBps), Inline: true},
+				{Name: "⚠️ Threshold", Value: fmt.Sprintf("%.1f MB/s", a.cfg.Thresholds.NetTxMBps), Inline: true},
+			},
+		})
 	}
 }
 
 // sendIfCooldown sends an alert only if the cooldown period has elapsed.
-func (a *Alerter) sendIfCooldown(key, message string) {
+func (a *Alerter) sendIfCooldown(key string, alert notifier.Alert) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -113,11 +157,7 @@ func (a *Alerter) sendIfCooldown(key, message string) {
 		}
 	}
 
-	hostname := getHostname()
-	fullMessage := fmt.Sprintf("🖥️ **Host:** `%s`\n%s\n⏰ %s",
-		hostname, message, now.Format("2006-01-02 15:04:05 MST"))
-
-	if err := a.notifier.Send(fullMessage); err != nil {
+	if err := a.notifier.SendAlert(alert); err != nil {
 		fmt.Printf("[WARN] failed to send discord alert: %v\n", err)
 	} else {
 		a.lastAlert[key] = now
