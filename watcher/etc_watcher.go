@@ -136,36 +136,48 @@ func detectFileModifier(filePath string) string {
 	return "unknown"
 }
 
-// getUserFromAuditLog queries ausearch for recent write events on the file.
-// Example: ausearch -f /etc/shadow -i --just-one -ts recent
-// Output contains lines like: "uid=shafiun" or "auid=shafiun".
+// getUserFromAuditLog queries ausearch for the MOST RECENT write event on the file.
+// We fetch all events (no --just-one, which returns the oldest) and extract the
+// auid from the LAST SYSCALL record — that's the actual person who just did it.
 func getUserFromAuditLog(filePath string) string {
-	out, err := exec.Command("ausearch", "-f", filePath, "-i", "--just-one", "-ts", "recent").Output()
+	// Brief pause so auditd can flush the event to the log before we query.
+	time.Sleep(100 * time.Millisecond)
+
+	// Compute a timestamp ~5 seconds ago for a tight search window.
+	ts := time.Now().Add(-5 * time.Second).Format("01/02/2006 15:04:05")
+
+	out, err := exec.Command("ausearch", "-f", filePath, "-i", "-ts", ts).Output()
 	if err != nil || len(out) == 0 {
 		return ""
 	}
 
-	output := string(out)
+	// Parse output and find the LAST SYSCALL line — that's the most recent event.
+	// ausearch output is chronological, so the last matching record is the one
+	// that corresponds to the inotify event we just received.
+	lines := strings.Split(string(out), "\n")
+	lastAuid := ""
+	lastUid := ""
 
-	// Look for auid= (audit/login UID — the original login user).
-	// This persists through sudo/su and is the real person.
-	for _, line := range strings.Split(output, "\n") {
-		if idx := strings.Index(line, "auid="); idx >= 0 {
-			val := extractAuditValue(line, "auid=")
-			if val != "" && val != "unset" && val != "root" {
-				return val
-			}
+	for _, line := range lines {
+		// SYSCALL lines contain both auid= and uid=.
+		if !strings.Contains(line, "SYSCALL") {
+			continue
+		}
+
+		if val := extractAuditValue(line, "auid="); val != "" && val != "unset" && val != "root" {
+			lastAuid = val
+		}
+		if val := extractAuditValue(line, " uid="); val != "" && val != "unset" {
+			lastUid = val
 		}
 	}
 
-	// Fallback: look for uid= (effective user who ran the command).
-	for _, line := range strings.Split(output, "\n") {
-		if idx := strings.Index(line, " uid="); idx >= 0 {
-			val := extractAuditValue(line, " uid=")
-			if val != "" && val != "unset" {
-				return val
-			}
-		}
+	// Prefer auid (original login user, survives sudo/su) over uid.
+	if lastAuid != "" {
+		return lastAuid
+	}
+	if lastUid != "" {
+		return lastUid
 	}
 
 	return ""
