@@ -15,9 +15,12 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
 
+# PID file for CLI signal commands (alart -s reload)
+PIDFile=/var/run/alart-service.pid
+
 # Hardening
 ProtectSystem=strict
-ReadWritePaths=/var/log /etc/alart-service
+ReadWritePaths=/var/log /etc/alart-service /var/run
 ProtectHome=true
 NoNewPrivileges=false
 PrivateTmp=true

@@ -28,8 +28,18 @@ uninstall:
 	sudo systemctl disable alart-service 2>/dev/null || true
 	sudo rm -f /etc/systemd/system/alart-service.service
 	sudo rm -f /usr/local/bin/alart-service
+	sudo rm -f /usr/local/bin/alart
+	sudo rm -f /var/run/alart-service.pid
 	sudo systemctl daemon-reload
 	@echo "alart-service uninstalled. Config left at /etc/alart-service/"
+
+## reload: Reload configuration without restarting
+reload:
+	alart -s reload
+
+## test-config: Test configuration file syntax
+test-config:
+	alart -t
 
 ## gen-config: Generate a default config file locally
 gen-config:

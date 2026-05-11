@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
 // Discord sends alert messages to a Discord webhook.
 type Discord struct {
+	mu         sync.RWMutex
 	webhookURL string
 	client     *http.Client
 }
@@ -23,6 +25,20 @@ func NewDiscord(webhookURL string) *Discord {
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// UpdateWebhookURL safely updates the webhook URL (used during config reload).
+func (d *Discord) UpdateWebhookURL(url string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.webhookURL = url
+}
+
+// getWebhookURL safely reads the current webhook URL.
+func (d *Discord) getWebhookURL() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.webhookURL
 }
 
 // discordPayload is the JSON body Discord expects.
@@ -39,7 +55,8 @@ func (d *Discord) Send(message string) error {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
-	resp, err := d.client.Post(d.webhookURL, "application/json", bytes.NewReader(body))
+	url := d.getWebhookURL()
+	resp, err := d.client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("post to discord: %w", err)
 	}
@@ -98,7 +115,8 @@ func (d *Discord) SendEmbed(title, description string, color int, fields map[str
 		return fmt.Errorf("marshal embed: %w", err)
 	}
 
-	resp, err := d.client.Post(d.webhookURL, "application/json", bytes.NewReader(body))
+	url := d.getWebhookURL()
+	resp, err := d.client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("post embed to discord: %w", err)
 	}

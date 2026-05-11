@@ -31,6 +31,14 @@ func New(cfg *config.Config, discord *notifier.Discord) *Alerter {
 	}
 }
 
+// Reload updates the alerter with a new configuration (called on SIGHUP).
+func (a *Alerter) Reload(cfg *config.Config) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg = cfg
+	a.cooldown = cfg.GetAlertCooldown()
+}
+
 // Evaluate checks all metrics against thresholds and sends alerts if needed.
 func (a *Alerter) Evaluate(m *monitor.SystemMetrics) {
 	// CPU

@@ -15,6 +15,8 @@ Built in pure Go — reads directly from `/proc` and `/sys`, no cgo, no external
 | **Network Bandwidth** | Monitors RX/TX rates across all interfaces |
 | **/etc Watcher** | Real-time inotify alerts on file changes in `/etc` |
 | **Alert Cooldown** | Prevents spam with configurable cooldown per metric |
+| **Config Test** | `alart -t` validates config syntax like nginx |
+| **Live Reload** | `alart -s reload` applies config changes without restart |
 | **Systemd Ready** | Ships with unit file, runs as a proper service |
 
 ## Quick Start
@@ -68,14 +70,42 @@ sudo nano /etc/alart-service/config.json
 }
 ```
 
-### 4. Start
+### 4. Test Config
+
+```bash
+# Validate syntax (like nginx -t)
+alart -t
+
+# Output on success:
+# alart-service: the configuration file /etc/alart-service/config.json syntax is ok
+# alart-service: configuration file /etc/alart-service/config.json test is successful
+
+# Output on error:
+# alart-service: [ERROR] JSON syntax error in /etc/alart-service/config.json at line 5, column 12:
+#   → invalid character '}' looking for beginning of value
+# alart-service: configuration file /etc/alart-service/config.json test failed
+```
+
+### 5. Start
 
 ```bash
 sudo systemctl start alart-service
 sudo systemctl status alart-service
 ```
 
-### 5. View Logs
+### 6. Reload Config (no restart)
+
+After editing the config file, apply changes without restarting:
+
+```bash
+# Option 1: Using the alart CLI
+alart -s reload
+
+# Option 2: Using systemctl
+sudo systemctl reload alart-service
+```
+
+### 7. View Logs
 
 ```bash
 # Live logs
@@ -84,6 +114,18 @@ sudo journalctl -u alart-service -f
 # Or from log file
 sudo tail -f /var/log/alart-service.log
 ```
+
+## CLI Reference
+
+| Command | Description |
+|---|---|
+| `alart -t` | Test config file syntax and validate all values |
+| `alart -t -config /path/to/config.json` | Test a specific config file |
+| `alart -s reload` | Reload config without restart (sends SIGHUP) |
+| `alart -s stop` | Graceful shutdown (sends SIGTERM) |
+| `alart -s reopen` | Reopen log file (for log rotation, sends SIGUSR1) |
+| `alart -version` | Show version |
+| `alart -gen-config -config ./config.json` | Generate default config file |
 
 ## Configuration Reference
 
@@ -106,6 +148,22 @@ sudo tail -f /var/log/alart-service.log
 | `log_file` | string | `"/var/log/alart-service.log"` | Log file path (`"stdout"` for console) |
 | `log_level` | string | `"info"` | Log verbosity |
 
+## Typical Workflow
+
+```bash
+# 1. Edit config
+sudo nano /etc/alart-service/config.json
+
+# 2. Test your changes
+alart -t
+
+# 3. Apply changes (no downtime)
+alart -s reload
+
+# 4. Verify
+sudo journalctl -u alart-service -n 5
+```
+
 ## Discord Alert Examples
 
 **System metric alert:**
@@ -126,11 +184,18 @@ Usage: 92.3% (threshold: 85.0%)
 ⏰ 2026-05-11 09:20:45 UTC
 ```
 
+**Config reload notification:**
+```
+🔄 alart-service config reloaded
+🖥️ Host: web-server-01
+⏰ 2026-05-11 09:25:00 UTC
+```
+
 ## Architecture
 
 ```
 alart-service/
-├── cmd/alart-service/    # Entrypoint & CLI
+├── cmd/alart-service/    # Entrypoint & CLI (-t, -s reload)
 │   └── main.go
 ├── config/               # Configuration loading & validation
 │   └── config.go
@@ -172,4 +237,3 @@ The service is designed to be extremely lightweight:
 ## License
 
 MIT
-

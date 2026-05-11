@@ -10,6 +10,7 @@ INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/alart-service"
 SERVICE_FILE="/etc/systemd/system/alart-service.service"
 LOG_FILE="/var/log/alart-service.log"
+PID_FILE="/var/run/alart-service.pid"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -56,6 +57,14 @@ info "Installing binary to ${INSTALL_DIR}/${BINARY_NAME}"
 cp -f "${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 chmod 755 "${INSTALL_DIR}/${BINARY_NAME}"
 
+# Create 'alart' symlink for short CLI usage (alart -t, alart -s reload).
+if [[ -L "${INSTALL_DIR}/alart" ]] || [[ ! -e "${INSTALL_DIR}/alart" ]]; then
+    ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/alart"
+    info "Created symlink: alart → alart-service"
+else
+    warn "${INSTALL_DIR}/alart already exists and is not a symlink, skipping"
+fi
+
 # Create config directory.
 mkdir -p "${CONFIG_DIR}"
 
@@ -84,10 +93,16 @@ info "════════════════════════�
 info "  alart-service installed successfully!"
 info "═══════════════════════════════════════════════════════════"
 info ""
+info "  Commands:"
+info "    alart -t              Test config syntax"
+info "    alart -s reload       Reload config (no restart)"
+info "    alart -s stop         Graceful stop"
+info ""
 info "  Next steps:"
 info "    1. Edit config:   sudo nano ${CONFIG_DIR}/config.json"
-info "    2. Set your Discord webhook URL"
-info "    3. Start service: sudo systemctl start alart-service"
-info "    4. Check status:  sudo systemctl status alart-service"
-info "    5. View logs:     sudo journalctl -u alart-service -f"
+info "    2. Test config:   alart -t"
+info "    3. Set your Discord webhook URL"
+info "    4. Start service: sudo systemctl start alart-service"
+info "    5. Check status:  sudo systemctl status alart-service"
+info "    6. View logs:     sudo journalctl -u alart-service -f"
 info ""
