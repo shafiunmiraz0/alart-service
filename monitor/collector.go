@@ -109,12 +109,27 @@ func (c *Collector) Collect() (*SystemMetrics, error) {
 	if c.initialized {
 		elapsed := now.Sub(c.prevTime).Seconds()
 		if elapsed > 0 {
-			readDelta := diskIO.readBytes - c.prevDiskIO.readBytes
-			writeDelta := diskIO.writeBytes - c.prevDiskIO.writeBytes
-			m.DiskIOReadBytes = readDelta
-			m.DiskIOWriteBytes = writeDelta
-			m.DiskIOReadMBps = float64(readDelta) / (1024 * 1024) / elapsed
-			m.DiskIOWriteMBps = float64(writeDelta) / (1024 * 1024) / elapsed
+			// Guard against counter wraps (e.g. after reboot or overflow).
+			if diskIO.readBytes >= c.prevDiskIO.readBytes {
+				readDelta := diskIO.readBytes - c.prevDiskIO.readBytes
+				m.DiskIOReadBytes = readDelta
+				m.DiskIOReadMBps = float64(readDelta) / (1024 * 1024) / elapsed
+			}
+			if diskIO.writeBytes >= c.prevDiskIO.writeBytes {
+				writeDelta := diskIO.writeBytes - c.prevDiskIO.writeBytes
+				m.DiskIOWriteBytes = writeDelta
+				m.DiskIOWriteMBps = float64(writeDelta) / (1024 * 1024) / elapsed
+			}
+
+			// Sanity cap: anything above 100 Gbps (~12500 MB/s) is bogus.
+			if m.DiskIOReadMBps > 12500 {
+				m.DiskIOReadMBps = 0
+				m.DiskIOReadBytes = 0
+			}
+			if m.DiskIOWriteMBps > 12500 {
+				m.DiskIOWriteMBps = 0
+				m.DiskIOWriteBytes = 0
+			}
 		}
 	}
 	c.prevDiskIO = diskIO
@@ -127,12 +142,27 @@ func (c *Collector) Collect() (*SystemMetrics, error) {
 	if c.initialized {
 		elapsed := now.Sub(c.prevTime).Seconds()
 		if elapsed > 0 {
-			rxDelta := netNow.rxBytes - c.prevNet.rxBytes
-			txDelta := netNow.txBytes - c.prevNet.txBytes
-			m.NetRxBytes = rxDelta
-			m.NetTxBytes = txDelta
-			m.NetRxMBps = float64(rxDelta) / (1024 * 1024) / elapsed
-			m.NetTxMBps = float64(txDelta) / (1024 * 1024) / elapsed
+			// Guard against counter wraps (e.g. after reboot or overflow).
+			if netNow.rxBytes >= c.prevNet.rxBytes {
+				rxDelta := netNow.rxBytes - c.prevNet.rxBytes
+				m.NetRxBytes = rxDelta
+				m.NetRxMBps = float64(rxDelta) / (1024 * 1024) / elapsed
+			}
+			if netNow.txBytes >= c.prevNet.txBytes {
+				txDelta := netNow.txBytes - c.prevNet.txBytes
+				m.NetTxBytes = txDelta
+				m.NetTxMBps = float64(txDelta) / (1024 * 1024) / elapsed
+			}
+
+			// Sanity cap: anything above 100 Gbps (~12500 MB/s) is bogus.
+			if m.NetRxMBps > 12500 {
+				m.NetRxMBps = 0
+				m.NetRxBytes = 0
+			}
+			if m.NetTxMBps > 12500 {
+				m.NetTxMBps = 0
+				m.NetTxBytes = 0
+			}
 		}
 	}
 	c.prevNet = netNow
