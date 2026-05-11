@@ -1,15 +1,12 @@
-<<<<<<< HEAD
 # alart-service
 
-alart-service
-alart-service-arm64
+# Built binaries (only match root-level binary, not the directory)
+/alart-service
+/alart-service-arm64
 config.json
 *.log
 .env
-=======
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -33,10 +30,6 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
-.env
-
 # Editor/IDE
 # .idea/
 # .vscode/
->>>>>>> 8dbcbb758cdd57ebba714bbc0c80759d2c78ac96
