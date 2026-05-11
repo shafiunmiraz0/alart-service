@@ -50,6 +50,7 @@ sudo nano /etc/alart-service/config.json
 ```json
 {
   "discord_webhook_url": "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN",
+  "discord_avatar_url": "",
   "check_interval": "30s",
   "alert_cooldown": "5m",
   "thresholds": {
@@ -67,10 +68,17 @@ sudo nano /etc/alart-service/config.json
     "watch_paths": [],
     "ignore_patterns": ["*.swp", "*.tmp", "*~"]
   },
+  "k8s_cert_monitor": {
+    "check_interval": "6h",
+    "cert_paths": ["/etc/kubernetes/pki"],
+    "warning_days": [30, 14, 7, 1]
+  },
   "log_file": "/var/log/alart-service.log",
   "log_level": "info"
 }
 ```
+
+> **Note:** `k8s_cert_monitor` is **optional** — remove the entire block to disable K8s cert checking. `discord_avatar_url` is also optional — leave empty to use the default logo.
 
 ### 4. Test Config
 
