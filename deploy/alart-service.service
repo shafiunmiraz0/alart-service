@@ -1,0 +1,36 @@
+[Unit]
+Description=Alart Service - Lightweight System Monitoring & Discord Alerts
+Documentation=https://github.com/alart-service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+ExecStart=/usr/local/bin/alart-service -config /etc/alart-service/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=always
+RestartSec=5
+
+# Hardening
+ProtectSystem=strict
+ReadWritePaths=/var/log /etc/alart-service
+ProtectHome=true
+NoNewPrivileges=false
+PrivateTmp=true
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=64M
+CPUQuota=10%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=alart-service
+
+[Install]
+WantedBy=multi-user.target

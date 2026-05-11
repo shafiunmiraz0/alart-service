@@ -1,0 +1,22 @@
+{
+  "discord_webhook_url": "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN",
+  "check_interval": "30s",
+  "alert_cooldown": "5m",
+  "thresholds": {
+    "cpu_percent": 85.0,
+    "ram_percent": 85.0,
+    "disk_percent": 90.0,
+    "disk_io_read_mbps": 500.0,
+    "disk_io_write_mbps": 300.0,
+    "net_rx_mbps": 100.0,
+    "net_tx_mbps": 100.0
+  },
+  "etc_monitor": {
+    "enabled": true,
+    "recursive": true,
+    "watch_paths": [],
+    "ignore_patterns": ["*.swp", "*.tmp", "*~", ".pwd.lock"]
+  },
+  "log_file": "/var/log/alart-service.log",
+  "log_level": "info"
+}

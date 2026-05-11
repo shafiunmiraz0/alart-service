@@ -1,0 +1,7 @@
+# alart-service
+
+alart-service
+alart-service-arm64
+config.json
+*.log
+.env
