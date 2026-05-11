@@ -214,6 +214,7 @@ alart-service/
 │   ├── alart-service.service
 │   └── config.sample.json
 ├── install.sh            # One-command installer
+├── uninstall.sh          # Clean uninstaller (--purge for full removal)
 ├── Makefile              # Build targets
 └── go.mod
 ```
@@ -221,9 +222,17 @@ alart-service/
 ## Uninstall
 
 ```bash
+# Remove service but keep config and logs
+sudo bash uninstall.sh
+
+# Or via make
 make uninstall
-# Config preserved at /etc/alart-service/ — remove manually if desired
-sudo rm -rf /etc/alart-service
+
+# Remove everything including config and logs
+sudo bash uninstall.sh --purge
+
+# Or via make
+make purge
 ```
 
 ## Resource Usage

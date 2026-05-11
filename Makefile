@@ -22,16 +22,13 @@ clean:
 install: build
 	sudo bash install.sh
 
-## uninstall: Remove the service from the system
+## uninstall: Remove the service from the system (keeps config)
 uninstall:
-	sudo systemctl stop alart-service 2>/dev/null || true
-	sudo systemctl disable alart-service 2>/dev/null || true
-	sudo rm -f /etc/systemd/system/alart-service.service
-	sudo rm -f /usr/local/bin/alart-service
-	sudo rm -f /usr/local/bin/alart
-	sudo rm -f /var/run/alart-service.pid
-	sudo systemctl daemon-reload
-	@echo "alart-service uninstalled. Config left at /etc/alart-service/"
+	sudo bash uninstall.sh
+
+## purge: Remove the service and all config/logs
+purge:
+	sudo bash uninstall.sh --purge
 
 ## reload: Reload configuration without restarting
 reload:
