@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -106,26 +107,118 @@ func (w *EtcWatcher) notifyFileEvent(eventType, filePath string) {
 	}
 }
 
-// detectUser tries to find the current user from environment.
+// detectUser finds the real login user(s) who are currently logged into the system.
+// Since the service runs as root under systemd, we can't use $USER.
+// Instead, we use 'who' to find active login sessions — this shows the original
+// SSH user even after 'sudo su'.
 func detectUser() string {
-	if u := os.Getenv("USER"); u != "" {
-		return u
+	// Method 1: Parse 'who' output for active login sessions.
+	// This is the most reliable way to find who SSH'd in.
+	if users := getActiveLoginUsers(); len(users) > 0 {
+		return strings.Join(users, ", ")
 	}
-	if u := os.Getenv("LOGNAME"); u != "" {
-		return u
+
+	// Method 2: Scan /proc/*/loginuid for non-root login UIDs.
+	// The Linux kernel tracks the original login UID (audit UID) which
+	// persists through sudo/su.
+	if users := getLoginUIDs(); len(users) > 0 {
+		return strings.Join(users, ", ")
 	}
-	// Try reading /proc/self/status for process UID.
-	data, err := os.ReadFile("/proc/self/status")
-	if err != nil {
-		return "unknown"
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "Uid:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				return fmt.Sprintf("uid:%s", fields[1])
-			}
-		}
-	}
+
 	return "unknown"
 }
+
+// getActiveLoginUsers parses 'who' output to find logged-in users.
+// 'who' reads /var/run/utmp and shows the original login user, not the
+// effective user after sudo/su.
+// Example output: "shafiun  pts/0  2026-05-11 17:00 (192.168.1.5)"
+func getActiveLoginUsers() []string {
+	out, err := exec.Command("who").Output()
+	if err != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var users []string
+
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 1 {
+			continue
+		}
+		username := fields[0]
+
+		// Skip system users / root (we want the real login user).
+		if username == "root" || username == "" {
+			continue
+		}
+
+		if !seen[username] {
+			seen[username] = true
+			users = append(users, username)
+		}
+	}
+
+	return users
+}
+
+// getLoginUIDs scans /proc/*/loginuid to find non-root login UIDs.
+// The loginuid is set at login and never changes, even after sudo su.
+// UID 4294967295 (0xFFFFFFFF) means "not set" (kernel default).
+func getLoginUIDs() []string {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var users []string
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		// Only look at numeric PID directories.
+		name := entry.Name()
+		if len(name) == 0 || name[0] < '0' || name[0] > '9' {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join("/proc", name, "loginuid"))
+		if err != nil {
+			continue
+		}
+
+		uidStr := strings.TrimSpace(string(data))
+		// Skip unset (4294967295) and root (0).
+		if uidStr == "4294967295" || uidStr == "0" || uidStr == "" {
+			continue
+		}
+
+		if !seen[uidStr] {
+			seen[uidStr] = true
+			username := resolveUID(uidStr)
+			users = append(users, username)
+		}
+	}
+
+	return users
+}
+
+// resolveUID converts a numeric UID to a username by reading /etc/passwd.
+func resolveUID(uid string) string {
+	data, err := os.ReadFile("/etc/passwd")
+	if err != nil {
+		return "uid:" + uid
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.SplitN(line, ":", 4)
+		if len(parts) >= 3 && parts[2] == uid {
+			return parts[0]
+		}
+	}
+
+	return "uid:" + uid
+}
+
