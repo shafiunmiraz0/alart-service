@@ -4,10 +4,18 @@ CMD_DIR := ./cmd/alart-service
 VERSION := 1.0.0
 LDFLAGS := -ldflags="-s -w -X main.version=$(VERSION)"
 
-.PHONY: build clean install uninstall test
+.PHONY: build clean install uninstall test ensure-go
+
+## ensure-go: Install Go if not present
+ensure-go:
+	@command -v go >/dev/null 2>&1 || { \
+		echo "[INFO] Go not found. Installing golang-go..."; \
+		apt-get update >/dev/null 2>&1 && apt-get install -y golang-go >/dev/null 2>&1 || { echo "[ERROR] Failed to install golang-go."; exit 1; }; \
+		echo "[INFO] Go installed successfully."; \
+	}
 
 ## build: Build the binary for Linux amd64
-build:
+build: ensure-go
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY_NAME) $(CMD_DIR)
 
 ## build-arm: Build the binary for Linux ARM64 (Raspberry Pi, etc.)
