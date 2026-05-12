@@ -138,19 +138,33 @@ func detectFileModifier(filePath string) string {
 
 // getUserFromAuditLog queries ausearch for the MOST RECENT write event on the file.
 // It tries multiple search strategies to maximize detection for files in subdirectories:
-//  1. Search by full path (works for files directly in /etc)
-//  2. Search by basename (catches cases where editors save via temp files)
-//  3. Search by audit key and filter for our path (catches all /etc events)
+//  1. Search by resolved real path (handles symlinks — e.g. /etc/openresty → /usr/local/openresty)
+//  2. Search by original path (works for files directly in /etc)
+//  3. Search by basename (catches cases where editors save via temp files)
+//  4. Search by audit key and filter for our path (catches all /etc events)
 func getUserFromAuditLog(filePath string) string {
 	// Brief pause so auditd can flush the event to the log before we query.
 	time.Sleep(300 * time.Millisecond)
 
-	// Strategy 1: Search by full file path.
+	// Strategy 1: Resolve symlinks and search by the REAL filesystem path.
+	// This is critical when /etc contains symlinks (e.g. /etc/openresty → /usr/local/openresty/nginx).
+	// Inotify follows symlinks, so we get the /etc/... path, but auditd records the
+	// real path on disk. ausearch won't find anything unless we use the real path.
+	realPath := filePath
+	if resolved, err := filepath.EvalSymlinks(filePath); err == nil && resolved != filePath {
+		realPath = resolved
+		log.Printf("[etc-watcher] resolved symlink: %s → %s", filePath, realPath)
+		if user := runAusearch([]string{"-f", realPath, "-i", "-ts", "recent"}, realPath); user != "" {
+			return user
+		}
+	}
+
+	// Strategy 2: Search by original (possibly symlinked) path.
 	if user := runAusearch([]string{"-f", filePath, "-i", "-ts", "recent"}, filePath); user != "" {
 		return user
 	}
 
-	// Strategy 2: Search by basename only — editors like nano may save via
+	// Strategy 3: Search by basename only — editors like nano may save via
 	// temp files or the audit record may use a relative path.
 	base := filepath.Base(filePath)
 	if base != filePath {
@@ -159,9 +173,9 @@ func getUserFromAuditLog(filePath string) string {
 		}
 	}
 
-	// Strategy 3: Search by audit key — this returns ALL /etc events, then we
-	// filter for event blocks that mention our file path or basename.
-	if user := searchAuditByKey(filePath); user != "" {
+	// Strategy 4: Search by audit key — this returns ALL /etc events, then we
+	// filter for event blocks that mention our file path, real path, or basename.
+	if user := searchAuditByKey(filePath, realPath); user != "" {
 		return user
 	}
 
@@ -184,8 +198,8 @@ func runAusearch(args []string, label string) string {
 }
 
 // searchAuditByKey queries all events tagged with the alart-etc-monitor key,
-// then filters for event blocks that mention the target file path or its basename.
-func searchAuditByKey(filePath string) string {
+// then filters for event blocks that mention the target file path, real path, or basename.
+func searchAuditByKey(filePath, realPath string) string {
 	out, err := exec.Command("ausearch", "-k", "alart-etc-monitor", "-i", "-ts", "recent").CombinedOutput()
 	if len(out) == 0 || err != nil {
 		return ""
@@ -195,11 +209,13 @@ func searchAuditByKey(filePath string) string {
 	output := string(out)
 
 	// Audit events are separated by "----" lines. Find the LAST block
-	// that mentions our file path or basename.
+	// that mentions our file path, real path, or basename.
 	blocks := strings.Split(output, "----")
 	var lastRelevant string
 	for _, block := range blocks {
-		if strings.Contains(block, filePath) || strings.Contains(block, base) {
+		if strings.Contains(block, filePath) ||
+			(realPath != "" && strings.Contains(block, realPath)) ||
+			strings.Contains(block, base) {
 			lastRelevant = block
 		}
 	}

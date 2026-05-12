@@ -133,8 +133,25 @@ if command -v auditctl &>/dev/null; then
     # Add rule to live kernel.
     auditctl ${AUDIT_RULE} 2>/dev/null || true
 
-    # Persist the rule across reboots.
+    # Start building the persistent rules file.
     echo "${AUDIT_RULE}" > "${AUDIT_RULES_FILE}"
+
+    # Also add audit rules for symlink TARGETS under /etc.
+    # Example: /etc/openresty → /usr/local/openresty/nginx
+    # Without this, auditd records events under the real path but our
+    # ausearch queries for /etc/... would miss them.
+    for link in /etc/*/; do
+        if [[ -L "${link%/}" ]]; then
+            real_target=$(readlink -f "${link%/}")
+            if [[ -d "${real_target}" ]]; then
+                SYMLINK_RULE="-a always,exit -F dir=${real_target} -F perm=wa -k alart-etc-monitor"
+                auditctl ${SYMLINK_RULE} 2>/dev/null || true
+                echo "${SYMLINK_RULE}" >> "${AUDIT_RULES_FILE}"
+                info "Added audit rule for symlink target: ${link%/} → ${real_target}"
+            fi
+        fi
+    done
+
     chmod 640 "${AUDIT_RULES_FILE}"
 
     # Restart auditd to pick up the rules.
