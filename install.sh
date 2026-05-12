@@ -121,8 +121,13 @@ if ! command -v auditctl &>/dev/null; then
 fi
 
 if command -v auditctl &>/dev/null; then
-    # Add a persistent audit rule to watch /etc for writes.
-    AUDIT_RULE="-w /etc -p wa -k alart-etc-monitor"
+    # Remove old file-watch rule if it exists (from previous installs).
+    auditctl -W /etc -p wa -k alart-etc-monitor 2>/dev/null || true
+
+    # Use a syscall-based rule with dir= filter — this is GUARANTEED to
+    # recursively monitor all subdirectories under /etc (unlike -w which
+    # may only watch the top-level directory on some kernels).
+    AUDIT_RULE="-a always,exit -F dir=/etc -F perm=wa -k alart-etc-monitor"
     AUDIT_RULES_FILE="/etc/audit/rules.d/alart-etc.rules"
 
     # Add rule to live kernel.
@@ -134,7 +139,7 @@ if command -v auditctl &>/dev/null; then
 
     # Restart auditd to pick up the rules.
     systemctl restart auditd 2>/dev/null || service auditd restart 2>/dev/null || true
-    info "Audit rule installed: watching /etc for write/attribute changes"
+    info "Audit rule installed: watching /etc recursively for write/attribute changes"
 else
     warn "auditd not available. /etc user detection will use fallback methods (lsof, /proc)."
 fi

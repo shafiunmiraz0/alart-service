@@ -137,28 +137,84 @@ func detectFileModifier(filePath string) string {
 }
 
 // getUserFromAuditLog queries ausearch for the MOST RECENT write event on the file.
-// We fetch all events (no --just-one, which returns the oldest) and extract the
-// auid from the LAST SYSCALL record — that's the actual person who just did it.
+// It tries multiple search strategies to maximize detection for files in subdirectories:
+//  1. Search by full path (works for files directly in /etc)
+//  2. Search by basename (catches cases where editors save via temp files)
+//  3. Search by audit key and filter for our path (catches all /etc events)
 func getUserFromAuditLog(filePath string) string {
 	// Brief pause so auditd can flush the event to the log before we query.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 
-	// Use "-ts recent" (last 10 minutes) — simple and reliable.
-	// We take the LAST SYSCALL record below, so stale events are harmless.
-	out, err := exec.Command("ausearch", "-f", filePath, "-i", "-ts", "recent").CombinedOutput()
+	// Strategy 1: Search by full file path.
+	if user := runAusearch([]string{"-f", filePath, "-i", "-ts", "recent"}, filePath); user != "" {
+		return user
+	}
+
+	// Strategy 2: Search by basename only — editors like nano may save via
+	// temp files or the audit record may use a relative path.
+	base := filepath.Base(filePath)
+	if base != filePath {
+		if user := runAusearch([]string{"-f", base, "-i", "-ts", "recent"}, filePath); user != "" {
+			return user
+		}
+	}
+
+	// Strategy 3: Search by audit key — this returns ALL /etc events, then we
+	// filter for event blocks that mention our file path or basename.
+	if user := searchAuditByKey(filePath); user != "" {
+		return user
+	}
+
+	log.Printf("[etc-watcher] ausearch: no audit events found for %s", filePath)
+	return ""
+}
+
+// runAusearch executes ausearch with the given args and parses the user from SYSCALL lines.
+func runAusearch(args []string, label string) string {
+	out, err := exec.Command("ausearch", args...).CombinedOutput()
 	if len(out) == 0 {
 		if err != nil {
-			log.Printf("[etc-watcher] ausearch error: %v", err)
+			log.Printf("[etc-watcher] ausearch (%s) error: %v", label, err)
 		}
 		return ""
 	}
 
-	output := string(out)
-	log.Printf("[etc-watcher] ausearch returned %d bytes for %s", len(out), filePath)
+	log.Printf("[etc-watcher] ausearch returned %d bytes for %s", len(out), label)
+	return parseAuditUser(string(out))
+}
 
-	// Parse output and find the LAST SYSCALL line — that's the most recent event.
-	// ausearch output is chronological, so the last matching record is the one
-	// that corresponds to the inotify event we just received.
+// searchAuditByKey queries all events tagged with the alart-etc-monitor key,
+// then filters for event blocks that mention the target file path or its basename.
+func searchAuditByKey(filePath string) string {
+	out, err := exec.Command("ausearch", "-k", "alart-etc-monitor", "-i", "-ts", "recent").CombinedOutput()
+	if len(out) == 0 || err != nil {
+		return ""
+	}
+
+	base := filepath.Base(filePath)
+	output := string(out)
+
+	// Audit events are separated by "----" lines. Find the LAST block
+	// that mentions our file path or basename.
+	blocks := strings.Split(output, "----")
+	var lastRelevant string
+	for _, block := range blocks {
+		if strings.Contains(block, filePath) || strings.Contains(block, base) {
+			lastRelevant = block
+		}
+	}
+
+	if lastRelevant == "" {
+		return ""
+	}
+
+	log.Printf("[etc-watcher] ausearch key-search matched block for %s", filePath)
+	return parseAuditUser(lastRelevant)
+}
+
+// parseAuditUser extracts the user from ausearch output by finding the LAST
+// SYSCALL line and reading auid (preferred) or uid from it.
+func parseAuditUser(output string) string {
 	lines := strings.Split(output, "\n")
 	lastAuid := ""
 	lastUid := ""
@@ -185,9 +241,8 @@ func getUserFromAuditLog(filePath string) string {
 		return lastUid
 	}
 
-	// If we got output but no SYSCALL lines, log it for debugging.
-	if lastAuid == "" && lastUid == "" && len(output) > 0 {
-		// Log first 300 chars to see what ausearch actually returned.
+	// Log first 300 chars for debugging if we got output but no SYSCALL lines.
+	if len(output) > 0 {
 		preview := output
 		if len(preview) > 300 {
 			preview = preview[:300]
