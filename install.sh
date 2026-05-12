@@ -39,8 +39,19 @@ info "Installing alart-service..."
 if [[ ! -f "./${BINARY_NAME}" ]]; then
     info "Binary not found, building from source..."
     if ! command -v go &>/dev/null; then
-        error "Go is not installed. Please install Go 1.21+ first."
-        exit 1
+        info "Go is not installed. Attempting to install..."
+        if command -v apt-get &>/dev/null; then
+            apt-get update >/dev/null 2>&1
+            apt-get install -y golang-go >/dev/null 2>&1 || { error "Failed to install golang-go via apt."; exit 1; }
+        elif command -v yum &>/dev/null; then
+            yum install -y golang >/dev/null 2>&1 || { error "Failed to install golang via yum."; exit 1; }
+        elif command -v dnf &>/dev/null; then
+            dnf install -y golang >/dev/null 2>&1 || { error "Failed to install golang via dnf."; exit 1; }
+        else
+            error "No supported package manager found. Please install Go 1.21+ manually."
+            exit 1
+        fi
+        info "Go installed successfully."
     fi
     CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o "${BINARY_NAME}" ./cmd/alart-service/
     info "Build complete."
